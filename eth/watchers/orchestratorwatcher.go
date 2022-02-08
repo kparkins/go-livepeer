@@ -3,6 +3,7 @@ package watchers
 import (
 	"math"
 	"math/big"
+	"sync"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -22,6 +23,8 @@ type OrchestratorWatcher struct {
 	lpEth   eth.LivepeerEthClient
 	tw      timeWatcher
 	quit    chan struct{}
+	blockMu sync.Mutex
+	roundMu sync.Mutex
 }
 
 func NewOrchestratorWatcher(bondingManagerAddr ethcommon.Address, watcher BlockWatcher, store common.OrchestratorStore, lpEth eth.LivepeerEthClient, tw timeWatcher) (*OrchestratorWatcher, error) {
@@ -42,12 +45,12 @@ func NewOrchestratorWatcher(bondingManagerAddr ethcommon.Address, watcher BlockW
 
 // Watch starts the event watching loop
 func (ow *OrchestratorWatcher) Watch() {
-	roundEvents := make(chan types.Log, 10)
-	roundSub := ow.tw.SubscribeRounds(roundEvents)
+	roundSink := make(chan types.Log, 10)
+	roundSub := ow.tw.SubscribeRounds(roundSink)
 	defer roundSub.Unsubscribe()
 
-	events := make(chan []*blockwatch.Event, 10)
-	sub := ow.watcher.Subscribe(events)
+	blockSink := make(chan []*blockwatch.Event, 10)
+	sub := ow.watcher.Subscribe(blockSink)
 	defer sub.Unsubscribe()
 
 	for {
@@ -56,12 +59,14 @@ func (ow *OrchestratorWatcher) Watch() {
 			return
 		case err := <-sub.Err():
 			glog.Error(err)
-		case events := <-events:
-			ow.handleBlockEvents(events)
-		case roundEvent := <-roundEvents:
-			if err := ow.handleRoundEvent(roundEvent); err != nil {
-				glog.Errorf("error handling new round event: %v", err)
-			}
+		case block := <-blockSink:
+			go ow.handleBlockEvents(block)
+		case round := <-roundSink:
+			go func() {
+				if err := ow.handleRoundEvent(round); err != nil {
+					glog.Errorf("error handling new round event: %v", err)
+				}
+			}()
 		}
 	}
 }
@@ -90,6 +95,9 @@ func (ow *OrchestratorWatcher) handleLog(log types.Log) error {
 		// Noop if we cannot find the event name
 		return nil
 	}
+
+	ow.blockMu.Lock()
+	defer ow.blockMu.Unlock()
 
 	switch eventName {
 	case "TranscoderActivated":
@@ -164,6 +172,9 @@ func (ow *OrchestratorWatcher) handleTranscoderDeactivated(log types.Log) error 
 }
 
 func (ow *OrchestratorWatcher) handleRoundEvent(log types.Log) error {
+	ow.roundMu.Lock()
+	defer ow.roundMu.Unlock()
+
 	round, err := ow.lpEth.CurrentRound()
 	if err != nil {
 		return err

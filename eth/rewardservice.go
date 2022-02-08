@@ -3,6 +3,7 @@ package eth
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/golang/glog"
@@ -18,6 +19,7 @@ type RewardService struct {
 	working      bool
 	cancelWorker context.CancelFunc
 	tw           timeWatcher
+	mu           sync.Mutex
 }
 
 func NewRewardService(client LivepeerEthClient, tw timeWatcher) *RewardService {
@@ -35,8 +37,8 @@ func (s *RewardService) Start(ctx context.Context) error {
 	cancelCtx, cancel := context.WithCancel(ctx)
 	s.cancelWorker = cancel
 
-	rounds := make(chan types.Log, 10)
-	sub := s.tw.SubscribeRounds(rounds)
+	roundSink := make(chan types.Log, 10)
+	sub := s.tw.SubscribeRounds(roundSink)
 	defer sub.Unsubscribe()
 
 	s.working = true
@@ -50,11 +52,13 @@ func (s *RewardService) Start(ctx context.Context) error {
 			if err != nil {
 				glog.Errorf("Round subscription error err=%q", err)
 			}
-		case <-rounds:
-			err := s.tryReward()
-			if err != nil {
-				glog.Errorf("Error trying to call reward err=%q", err)
-			}
+		case <-roundSink:
+			go func() {
+				err := s.tryReward()
+				if err != nil {
+					glog.Errorf("Error trying to call reward err=%q", err)
+				}
+			}()
 		case <-cancelCtx.Done():
 			glog.V(5).Infof("Reward service done")
 			return nil
@@ -78,6 +82,9 @@ func (s *RewardService) IsWorking() bool {
 }
 
 func (s *RewardService) tryReward() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	currentRound := s.tw.LastInitializedRound()
 
 	t, err := s.client.GetTranscoder(s.client.Account().Address)

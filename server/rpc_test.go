@@ -85,10 +85,6 @@ func (r *stubOrchestrator) ServiceURI() *url.URL {
 	return url
 }
 
-func (r *stubOrchestrator) CurrentBlock() *big.Int {
-	return r.block
-}
-
 func (r *stubOrchestrator) Sign(msg []byte) ([]byte, error) {
 	if r.offchain {
 		return nil, nil
@@ -180,7 +176,7 @@ func newStubOrchestrator() *stubOrchestrator {
 func (r *stubOrchestrator) CheckCapacity(mid core.ManifestID) error {
 	return r.sessCapErr
 }
-func (r *stubOrchestrator) ServeTranscoder(stream net.Transcoder_RegisterTranscoderServer, capacity int) {
+func (r *stubOrchestrator) ServeTranscoder(stream net.Transcoder_RegisterTranscoderServer, capacity int, capabilities *net.Capabilities) {
 }
 func (r *stubOrchestrator) TranscoderResults(job int64, res *core.RemoteTranscoderResult) {
 }
@@ -1282,10 +1278,6 @@ func (o *mockOrchestrator) VerifySig(addr ethcommon.Address, msg string, sig []b
 	args := o.Called(addr, msg, sig)
 	return args.Bool(0)
 }
-func (o *mockOrchestrator) CurrentBlock() *big.Int {
-	o.Called()
-	return nil
-}
 func (o *mockOrchestrator) TranscodeSeg(ctx context.Context, md *core.SegTranscodingMetadata, seg *stream.HLSSegment) (*core.TranscodeResult, error) {
 	args := o.Called(md, seg)
 
@@ -1296,7 +1288,7 @@ func (o *mockOrchestrator) TranscodeSeg(ctx context.Context, md *core.SegTransco
 
 	return res, args.Error(1)
 }
-func (o *mockOrchestrator) ServeTranscoder(stream net.Transcoder_RegisterTranscoderServer, capacity int) {
+func (o *mockOrchestrator) ServeTranscoder(stream net.Transcoder_RegisterTranscoderServer, capacity int, capabilities *net.Capabilities) {
 	o.Called(stream)
 }
 func (o *mockOrchestrator) TranscoderResults(job int64, res *core.RemoteTranscoderResult) {

@@ -29,6 +29,7 @@ import (
 	"github.com/livepeer/go-livepeer/pm"
 	"github.com/livepeer/go-livepeer/server"
 	"github.com/livepeer/livepeer-data/pkg/event"
+	"github.com/livepeer/livepeer-data/pkg/mistconnector"
 	"github.com/peterbourgon/ff/v3"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -82,6 +83,8 @@ func main() {
 	vFlag := flag.Lookup("v")
 	//We preserve this flag before resetting all the flags.  Not a scalable approach, but it'll do for now.  More discussions here - https://github.com/livepeer/go-livepeer/pull/617
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+	mistJson := flag.Bool("j", false, "Print application info as json")
 
 	// Network & Addresses:
 	network := flag.String("network", "offchain", "Network to connect to")
@@ -163,11 +166,14 @@ func main() {
 
 	// Config file
 	_ = flag.String("config", "", "Config file in the format 'key value', flags and env vars take precedence over the config file")
-	ff.Parse(flag.CommandLine, os.Args[1:],
+	err = ff.Parse(flag.CommandLine, os.Args[1:],
 		ff.WithConfigFileFlag("config"),
 		ff.WithEnvVarPrefix("LP"),
 		ff.WithConfigFileParser(ff.PlainParser),
 	)
+	if err != nil {
+		glog.Fatal("Error parsing config: ", err)
+	}
 
 	vFlag.Value.Set(*verbosity)
 
@@ -175,6 +181,17 @@ func main() {
 	flag.Visit(func(f *flag.Flag) { isFlagSet[f.Name] = true })
 
 	blockPollingTime := time.Duration(*blockPollingInterval) * time.Second
+
+	if *mistJson {
+		mistconnector.PrintMistConfigJson(
+			"livepeer",
+			"Official implementation of the Livepeer video processing protocol. Can play all roles in the network.",
+			"Livepeer",
+			core.LivepeerVersion,
+			flag.CommandLine,
+		)
+		return
+	}
 
 	if *version {
 		fmt.Println("Livepeer Node Version: " + core.LivepeerVersion)
@@ -199,6 +216,9 @@ func main() {
 	configOptions := map[string]*NetworkConfig{
 		"rinkeby": {
 			ethController: "0x9a9827455911a858E55f07911904fACC0D66027E",
+		},
+		"arbitrum-one-rinkeby": {
+			ethController: "0x9ceC649179e2C7Ab91688271bcD09fb707b3E574",
 		},
 		"mainnet": {
 			ethController: "0xf96d54e490317c557a967abfa5d6e33006be69b3",
@@ -272,6 +292,7 @@ func main() {
 		n.OrchSecret, _ = common.GetPass(*orchSecret)
 	}
 
+	transcoderCaps := core.DefaultCapabilities()
 	if *transcoder {
 		core.WorkDir = *datadir
 		if *nvidia != "" {
@@ -284,9 +305,9 @@ func main() {
 			glog.Infof("Transcoding on these Nvidia GPUs: %v", devices)
 			// Test transcoding with nvidia
 			if *testTranscoder {
-				err := core.TestNvidiaTranscoder(devices)
+				transcoderCaps, err = core.TestTranscoderCapabilities(devices)
 				if err != nil {
-					glog.Fatalf("Unable to transcode using Nvidia gpu=%q err=%q", strings.Join(devices, ","), err)
+					glog.Fatal(err)
 				}
 			}
 			// FIXME: Short-term hack to pre-load the detection models on every device
@@ -322,6 +343,8 @@ func main() {
 			// Initialize LB transcoder
 			n.Transcoder = core.NewLoadBalancingTranscoder(devices, core.NewNetintTranscoder, core.NewNvidiaTranscoderWithDetector)
 		} else {
+			// for local software mode, enable all capabilities
+			transcoderCaps = append(core.DefaultCapabilities(), core.OptionalCapabilities()...)
 			n.Transcoder = core.NewLocalTranscoder(*datadir)
 		}
 	}
@@ -478,28 +501,10 @@ func main() {
 		}
 		topics := watchers.FilterTopics()
 
-		// Determine backfilling start block
-		originalLastSeenBlock, err := dbh.LastSeenBlock()
-		if err != nil {
-			glog.Errorf("db: failed to retrieve latest retained block: %v", err)
-			return
-		}
-		currentRoundStartBlock, err := client.CurrentRoundStartBlock()
-		if err != nil {
-			glog.Errorf("eth: failed to retrieve current round start block: %v", err)
-			return
-		}
-
-		var blockWatcherBackfillStartBlock *big.Int
-		if originalLastSeenBlock == nil || originalLastSeenBlock.Cmp(currentRoundStartBlock) < 0 {
-			blockWatcherBackfillStartBlock = currentRoundStartBlock
-		}
-
 		blockWatcherCfg := blockwatch.Config{
 			Store:               n.Database,
 			PollingInterval:     blockPollingTime,
 			StartBlockDepth:     rpc.LatestBlockNumber,
-			BackfillStartBlock:  blockWatcherBackfillStartBlock,
 			BlockRetentionLimit: blockWatcherRetentionLimit,
 			WithLogs:            true,
 			Topics:              topics,
@@ -920,12 +925,11 @@ func main() {
 		// take the port to listen to from the service URI
 		*httpAddr = defaultAddr(*httpAddr, "", n.GetServiceURI().Port())
 
-		caps := core.DefaultCapabilities()
 		if *sceneClassificationModelPath != "" {
 			// Only enable experimental capabilities if scene classification model is actually loaded
-			caps = append(caps, core.ExperimentalCapabilities()...)
+			transcoderCaps = append(transcoderCaps, core.ExperimentalCapabilities()...)
 		}
-		n.Capabilities = core.NewCapabilities(caps, core.MandatoryCapabilities())
+		n.Capabilities = core.NewCapabilities(transcoderCaps, core.MandatoryOCapabilities())
 
 		if !*transcoder && n.OrchSecret == "" {
 			glog.Fatal("Running an orchestrator requires an -orchSecret for standalone mode or -transcoder for orchestrator+transcoder mode")
@@ -1018,7 +1022,7 @@ func main() {
 			glog.Fatal("Missing -orchAddr")
 		}
 
-		go server.RunTranscoder(n, orchURLs[0].Host, *maxSessions)
+		go server.RunTranscoder(n, orchURLs[0].Host, *maxSessions, transcoderCaps)
 	}
 
 	switch n.NodeType {

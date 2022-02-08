@@ -3,6 +3,7 @@ package pm
 import (
 	"math/big"
 	"strings"
+	"sync"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/golang/glog"
@@ -44,6 +45,8 @@ type ticketQueue struct {
 	store  TicketStore
 
 	quit chan struct{}
+
+	mu sync.Mutex
 }
 
 func newTicketQueue(sender ethcommon.Address, sm *LocalSenderMonitor) *ticketQueue {
@@ -91,62 +94,68 @@ func (q *ticketQueue) Length() (int, error) {
 // is sufficient to cover the face value of the ticket at the head of the queue. If the max float is sufficient, we pop
 // the ticket at the head of the queue and send it into q.redeemable which an external listener can use to receive redeemable tickets
 func (q *ticketQueue) startQueueLoop() {
-	blockNums := make(chan *big.Int, 10)
-	sub := q.tm.SubscribeBlocks(blockNums)
+	l1BlockSink := make(chan *big.Int, 10)
+	sub := q.tm.SubscribeL1Blocks(l1BlockSink)
 	defer sub.Unsubscribe()
 
-ticketLoop:
 	for {
 		select {
 		case err := <-sub.Err():
 			if err != nil {
-				glog.Errorf("Block subscription error err=%q", err)
+				glog.Errorf("L1 Block subscription error err=%q", err)
 			}
-		case latestBlock := <-blockNums:
-			numTickets, err := q.Length()
-			if err != nil {
-				glog.Errorf("Error getting queue length err=%q", err)
-				continue
-			}
-			for i := 0; i < int(numTickets); i++ {
-				nextTicket, err := q.store.SelectEarliestWinningTicket(q.sender, new(big.Int).Sub(q.tm.LastInitializedRound(), big.NewInt(ticketValidityPeriod)).Int64())
-				if err != nil {
-					glog.Errorf("Unable select earliest winning ticket err=%q", err)
-					continue ticketLoop
-				}
-				if nextTicket == nil {
-					continue ticketLoop
-				}
-
-				if nextTicket.ParamsExpirationBlock.Cmp(latestBlock) <= 0 {
-					resCh := make(chan struct {
-						txHash ethcommon.Hash
-						err    error
-					})
-
-					q.redeemable <- &redemption{nextTicket, resCh}
-					select {
-					case res := <-resCh:
-						// after receiving the response we can close the channel so it can be GC'd
-						close(resCh)
-						if res.err != nil {
-							glog.Errorf("Error redeeming err=%q", res.err)
-							// If the error is non-retryable then we mark the ticket as redeemed
-							if !isNonRetryableTicketErr(res.err) {
-								continue
-							}
-						}
-						if err := q.store.MarkWinningTicketRedeemed(nextTicket, res.txHash); err != nil {
-							glog.Error(err)
-							continue
-						}
-					case <-q.quit:
-						return
-					}
-				}
-			}
+		case block := <-l1BlockSink:
+			go q.handleBlockEvent(block)
 		case <-q.quit:
 			return
+		}
+	}
+}
+
+func (q *ticketQueue) handleBlockEvent(latestL1Block *big.Int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	numTickets, err := q.Length()
+	if err != nil {
+		glog.Errorf("Error getting queue length err=%q", err)
+		return
+	}
+	for i := 0; i < int(numTickets); i++ {
+		nextTicket, err := q.store.SelectEarliestWinningTicket(q.sender, new(big.Int).Sub(q.tm.LastInitializedRound(), big.NewInt(ticketValidityPeriod)).Int64())
+		if err != nil {
+			glog.Errorf("Unable select earliest winning ticket err=%q", err)
+			return
+		}
+		if nextTicket == nil {
+			return
+		}
+
+		if nextTicket.ParamsExpirationBlock.Cmp(latestL1Block) <= 0 {
+			resCh := make(chan struct {
+				txHash ethcommon.Hash
+				err    error
+			})
+
+			q.redeemable <- &redemption{nextTicket, resCh}
+			select {
+			case res := <-resCh:
+				// after receiving the response we can close the channel so it can be GC'd
+				close(resCh)
+				if res.err != nil {
+					glog.Errorf("Error redeeming err=%q", res.err)
+					// If the error is non-retryable then we mark the ticket as redeemed
+					if !isNonRetryableTicketErr(res.err) {
+						continue
+					}
+				}
+				if err := q.store.MarkWinningTicketRedeemed(nextTicket, res.txHash); err != nil {
+					glog.Error(err)
+					continue
+				}
+			case <-q.quit:
+				return
+			}
 		}
 	}
 }

@@ -5,11 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"math/big"
 	"math/rand"
-	"os"
 	"strconv"
 	"sync"
 	"testing"
@@ -32,54 +30,14 @@ import (
 
 var defaultRecipient = ethcommon.BytesToAddress([]byte("defaultRecipient"))
 
-func TestCurrentBlock(t *testing.T) {
-	tmpdir, _ := ioutil.TempDir("", "")
-	n, err := NewLivepeerNode(nil, tmpdir, nil)
-	if err != nil {
-		t.Error(err)
-	}
-	defer os.RemoveAll(tmpdir)
-	rm := &stubRoundsManager{}
-	orch := NewOrchestrator(n, rm)
-
-	// test empty db
-	if orch.CurrentBlock() != nil {
-		t.Error("Expected nil block")
-	}
-
-	db, dbraw, err := common.TempDB(t)
-	if err != nil {
-		t.Error("Error creating db ", err)
-	}
-	defer db.Close()
-	defer dbraw.Close()
-	n.Database = db
-
-	blkNum := big.NewInt(1234)
-	blkHash := ethcommon.BytesToHash([]byte("foo"))
-	if _, err := dbraw.Exec(fmt.Sprintf("INSERT INTO blockheaders(number, parent, hash, logs) VALUES(%v, \"\", %v, \"[]\")", blkNum.Int64(), blkHash.Hex())); err != nil {
-		t.Error("Unexpected error inserting mini header ", err)
-	}
-	if orch.CurrentBlock().Int64() != blkNum.Int64() {
-		t.Error("Unexpected block ", orch.CurrentBlock())
-	}
-
-	if _, err := dbraw.Exec(fmt.Sprintf("DELETE FROM blockheaders WHERE hash = %v", blkHash.Hex())); err != nil {
-		t.Error("Unexpected error deleting mini header ", err)
-	}
-
-	if orch.CurrentBlock() != nil {
-		t.Error("Expected nil getting nonexistent row")
-	}
-}
-
 func TestServeTranscoder(t *testing.T) {
 	n, _ := NewLivepeerNode(nil, "", nil)
 	n.TranscoderManager = NewRemoteTranscoderManager()
 	strm := &StubTranscoderServer{}
 
 	// test that a transcoder was created
-	go n.serveTranscoder(strm, 5)
+	capabilities := NewCapabilities(DefaultCapabilities(), []Capability{})
+	go n.serveTranscoder(strm, 5, capabilities.ToNetCapabilities())
 	time.Sleep(1 * time.Second)
 
 	tc, ok := n.TranscoderManager.liveTranscoders[strm]
@@ -102,7 +60,7 @@ func TestRemoteTranscoder(t *testing.T) {
 	m := NewRemoteTranscoderManager()
 	initTranscoder := func() (*RemoteTranscoder, *StubTranscoderServer) {
 		strm := &StubTranscoderServer{manager: m}
-		tc := NewRemoteTranscoder(m, strm, 5)
+		tc := NewRemoteTranscoder(m, strm, 5, nil)
 		return tc, strm
 	}
 
@@ -237,9 +195,11 @@ func TestManageTranscoders(t *testing.T) {
 	assert.Empty(m.remoteTranscoders)
 	assert.Equal(0, m.RegisteredTranscodersCount())
 
+	capabilities := NewCapabilities(DefaultCapabilities(), []Capability{})
+
 	// test that transcoder is added to liveTranscoders and remoteTranscoders
 	wg1 := newWg(1)
-	go func() { m.Manage(strm, 5); wg1.Done() }()
+	go func() { m.Manage(strm, 5, capabilities.ToNetCapabilities()); wg1.Done() }()
 	time.Sleep(1 * time.Millisecond) // allow the manager to activate
 
 	assert.NotNil(m.liveTranscoders[strm])
@@ -253,7 +213,7 @@ func TestManageTranscoders(t *testing.T) {
 
 	// test that additional transcoder is added to liveTranscoders and remoteTranscoders
 	wg2 := newWg(1)
-	go func() { m.Manage(strm2, 4); wg2.Done() }()
+	go func() { m.Manage(strm2, 4, capabilities.ToNetCapabilities()); wg2.Done() }()
 	time.Sleep(1 * time.Millisecond) // allow the manager to activate
 
 	assert.NotNil(m.liveTranscoders[strm])
@@ -285,6 +245,10 @@ func TestSelectTranscoder(t *testing.T) {
 	strm := &StubTranscoderServer{manager: m, WithholdResults: false}
 	strm2 := &StubTranscoderServer{manager: m}
 
+	capabilities := NewCapabilities(DefaultCapabilities(), []Capability{})
+	richCapabilities := NewCapabilities(append(DefaultCapabilities(), Capability_HEVC_Encode), []Capability{})
+	allCapabilities := NewCapabilities(append(DefaultCapabilities(), OptionalCapabilities()...), []Capability{})
+
 	// sanity check that transcoder is not in liveTranscoders or remoteTranscoders
 	assert := assert.New(t)
 	assert.Nil(m.liveTranscoders[strm])
@@ -292,9 +256,9 @@ func TestSelectTranscoder(t *testing.T) {
 
 	// register transcoders, which adds transcoder to liveTranscoders and remoteTranscoders
 	wg := newWg(1)
-	go func() { m.Manage(strm, 1) }()
+	go func() { m.Manage(strm, 1, capabilities.ToNetCapabilities()) }()
 	time.Sleep(1 * time.Millisecond) // allow time for first stream to register
-	go func() { m.Manage(strm2, 1); wg.Done() }()
+	go func() { m.Manage(strm2, 1, richCapabilities.ToNetCapabilities()); wg.Done() }()
 	time.Sleep(1 * time.Millisecond) // allow time for second stream to register
 
 	assert.NotNil(m.liveTranscoders[strm])
@@ -308,7 +272,7 @@ func TestSelectTranscoder(t *testing.T) {
 	// assert transcoder is returned from selectTranscoder
 	t1 := m.liveTranscoders[strm]
 	t2 := m.liveTranscoders[strm2]
-	currentTranscoder, err := m.selectTranscoder(testSessionId)
+	currentTranscoder, err := m.selectTranscoder(testSessionId, nil)
 	assert.Nil(err)
 	assert.Equal(t2, currentTranscoder)
 	assert.Equal(1, t2.load)
@@ -317,23 +281,37 @@ func TestSelectTranscoder(t *testing.T) {
 
 	// assert that same transcoder is selected for same sessionId
 	// and that load stays the same
-	currentTranscoder, err = m.selectTranscoder(testSessionId)
+	currentTranscoder, err = m.selectTranscoder(testSessionId, nil)
 	assert.Nil(err)
 	assert.Equal(t2, currentTranscoder)
 	assert.Equal(1, t2.load)
 	m.completeStreamSession(testSessionId)
 
+	// assert that transcoders are selected according to capabilities
+	currentTranscoder, err = m.selectTranscoder(testSessionId, capabilities)
+	assert.Nil(err)
+	m.completeStreamSession(testSessionId)
+	currentTranscoderRich, err := m.selectTranscoder(testSessionId, richCapabilities)
+	assert.Nil(err)
+	assert.NotEqual(currentTranscoder, currentTranscoderRich)
+	m.completeStreamSession(testSessionId)
+
+	// assert no transcoders available for unsupported capability
+	currentTranscoder, err = m.selectTranscoder(testSessionId, allCapabilities)
+	assert.NotNil(err)
+	m.completeStreamSession(testSessionId)
+
 	// assert that a new transcoder is selected for a new sessionId
-	currentTranscoder, err = m.selectTranscoder(testSessionId2)
+	currentTranscoder, err = m.selectTranscoder(testSessionId2, nil)
 	assert.Nil(err)
 	assert.Equal(t1, currentTranscoder)
 	assert.Equal(1, t1.load)
 
 	// Add some more load and assert no transcoder returned if all at capacity
-	currentTranscoder, err = m.selectTranscoder(testSessionId)
+	currentTranscoder, err = m.selectTranscoder(testSessionId, nil)
 	assert.Nil(err)
 	assert.Equal(t2, currentTranscoder)
-	noTrans, err := m.selectTranscoder(testSessionId3)
+	noTrans, err := m.selectTranscoder(testSessionId3, nil)
 	assert.Equal(err, ErrNoTranscodersAvailable)
 	assert.Nil(noTrans)
 
@@ -348,7 +326,7 @@ func TestSelectTranscoder(t *testing.T) {
 	assert.NotNil(m.liveTranscoders[strm])
 
 	// assert t1 is selected and t2 drained, but was previously selected
-	currentTranscoder, err = m.selectTranscoder(testSessionId)
+	currentTranscoder, err = m.selectTranscoder(testSessionId, nil)
 	assert.Nil(err)
 	assert.Equal(t1, currentTranscoder)
 	assert.Equal(1, t1.load)
@@ -371,13 +349,15 @@ func TestCompleteStreamSession(t *testing.T) {
 	testSessionId := "testID"
 	assert := assert.New(t)
 
+	capabilities := NewCapabilities(DefaultCapabilities(), []Capability{})
+
 	// register transcoders
-	go func() { m.Manage(strm, 1) }()
+	go func() { m.Manage(strm, 1, capabilities.ToNetCapabilities()) }()
 	time.Sleep(1 * time.Millisecond) // allow time for first stream to register
 	t1 := m.liveTranscoders[strm]
 
 	// selectTranscoder and assert that session is added
-	m.selectTranscoder(testSessionId)
+	m.selectTranscoder(testSessionId, nil)
 	assert.Equal(t1, m.streamSessions[testSessionId])
 	assert.Equal(1, t1.load)
 
@@ -436,6 +416,8 @@ func TestTranscoderManagerTranscoding(t *testing.T) {
 	s := &StubTranscoderServer{manager: m}
 	testSessionId := "testID"
 
+	capabilities := NewCapabilities(DefaultCapabilities(), []Capability{})
+
 	// sanity checks
 	assert := assert.New(t)
 	assert.Empty(m.liveTranscoders)
@@ -448,7 +430,7 @@ func TestTranscoderManagerTranscoding(t *testing.T) {
 	assert.Equal(err, ErrNoTranscodersAvailable)
 
 	wg := newWg(1)
-	go func() { m.Manage(s, 5); wg.Done() }()
+	go func() { m.Manage(s, 5, capabilities.ToNetCapabilities()); wg.Done() }()
 	time.Sleep(1 * time.Millisecond)
 
 	assert.Len(m.remoteTranscoders, 1) // sanity
@@ -489,7 +471,7 @@ func TestTranscoderManagerTranscoding(t *testing.T) {
 
 	// fatal error should not retry
 	wg.Add(1)
-	go func() { m.Manage(s, 5); wg.Done() }()
+	go func() { m.Manage(s, 5, capabilities.ToNetCapabilities()); wg.Done() }()
 	time.Sleep(1 * time.Millisecond)
 
 	assert.Len(m.remoteTranscoders, 1) // sanity check

@@ -34,6 +34,7 @@ type Redeemer struct {
 	eth       eth.LivepeerEthClient
 	sm        localSenderMonitor
 	quit      chan struct{}
+	mu        sync.Mutex
 }
 
 // NewRedeemer creates a new ticket redemption service instance
@@ -120,6 +121,8 @@ func (r *Redeemer) MaxFloat(ctx context.Context, req *net.MaxFloatReq) (*net.Max
 func (r *Redeemer) MonitorMaxFloat(req *net.MaxFloatReq, stream net.TicketRedeemer_MonitorMaxFloatServer) error {
 	sender := ethcommon.BytesToAddress(req.Sender)
 
+	errCh := make(chan error, 1)
+
 	sink := make(chan struct{}, 10)
 	sub := r.sm.SubscribeMaxFloatChange(sender, sink)
 	defer sub.Unsubscribe()
@@ -129,22 +132,28 @@ func (r *Redeemer) MonitorMaxFloat(req *net.MaxFloatReq, stream net.TicketRedeem
 			return nil
 		case <-stream.Context().Done():
 			return nil
+		case err := <-errCh:
+			return err
 		case err := <-sub.Err():
 			if err == nil {
 				return status.Error(codes.Canceled, "subscription closed")
 			}
 			return status.Error(codes.Internal, err.Error())
 		case <-sink:
-			maxFloat, err := r.sm.MaxFloat(sender)
-			if err != nil {
-				glog.Error(err)
-				continue
-			}
-			if err := stream.Send(&net.MaxFloatUpdate{MaxFloat: maxFloat.Bytes()}); err != nil {
+			go func() {
+				maxFloat, err := r.sm.MaxFloat(sender)
 				if err != nil {
-					return status.Error(codes.Internal, err.Error())
+					glog.Error(err)
+					return
 				}
-			}
+				if err := stream.Send(&net.MaxFloatUpdate{MaxFloat: maxFloat.Bytes()}); err != nil {
+					select {
+					case errCh <- status.Error(codes.Internal, err.Error()):
+					default:
+						// someone already sent an error first, ignore
+					}
+				}
+			}()
 		}
 	}
 }

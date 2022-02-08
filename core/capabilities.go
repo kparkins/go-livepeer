@@ -16,6 +16,10 @@ type Capabilities struct {
 	mandatories CapabilityString
 	constraints Constraints
 }
+type CapabilityTest struct {
+	inVideoData []byte
+	outProfile  ffmpeg.VideoProfile
+}
 
 // Do not rearrange these values! Only append.
 const (
@@ -36,11 +40,43 @@ const (
 	Capability_AuthToken
 	Capability_SceneClassification
 	Capability_MPEG7VideoSignature
+	Capability_HEVC_Decode
+	Capability_HEVC_Encode
+	Capability_VP8_Decode
+	Capability_VP9_Decode
+	Capability_VP8_Encode
+	Capability_VP9_Encode
 )
+
+
+var CapabilityTestLookup = map[Capability]CapabilityTest{
+	// 145x145 is the lowest resolution supported by NVENC on Windows
+	Capability_H264: {
+		inVideoData: testSegment_H264,
+		outProfile: ffmpeg.VideoProfile{Resolution: "145x145", Bitrate: "1000k", Format: ffmpeg.FormatMPEGTS},
+	},
+	Capability_HEVC_Decode: {
+		inVideoData: testSegment_HEVC,
+		outProfile: ffmpeg.VideoProfile{Resolution: "145x145", Bitrate: "1000k", Format: ffmpeg.FormatMPEGTS},
+	},
+	Capability_HEVC_Encode: {
+		inVideoData: testSegment_H264,
+		outProfile: ffmpeg.VideoProfile{Resolution: "145x145", Bitrate: "1000k", Format: ffmpeg.FormatMPEGTS, Encoder: ffmpeg.H265},
+	},
+	Capability_VP8_Decode: {
+		inVideoData: testSegment_VP8,
+		outProfile: ffmpeg.VideoProfile{Resolution: "145x145", Bitrate: "1000k", Format: ffmpeg.FormatMPEGTS},
+	},
+	Capability_VP9_Decode: {
+		inVideoData: testSegment_VP9,
+		outProfile: ffmpeg.VideoProfile{Resolution: "145x145", Bitrate: "1000k", Format: ffmpeg.FormatMPEGTS},
+	},
+}
 
 var capFormatConv = errors.New("capability: unknown format")
 var capStorageConv = errors.New("capability: unknown storage")
 var capProfileConv = errors.New("capability: unknown profile")
+var capCodecConv = errors.New("capability: unknown codec")
 
 func DefaultCapabilities() []Capability {
 	// Add to this list as new features are added.
@@ -62,12 +98,21 @@ func DefaultCapabilities() []Capability {
 	}
 }
 
+func OptionalCapabilities() []Capability {
+	return []Capability{
+		Capability_HEVC_Decode,
+		Capability_HEVC_Encode,
+		Capability_VP8_Decode,
+		Capability_VP9_Decode,
+	}
+}
+
 func ExperimentalCapabilities() []Capability {
 	// Add experimental capabilities if enabled during build
 	return experimentalCapabilities
 }
 
-func MandatoryCapabilities() []Capability {
+func MandatoryOCapabilities() []Capability {
 	// Add to this list as certain features become mandatory.
 	// Use sparingly, as adding to this is a hard break with older nodes
 	return []Capability{
@@ -110,7 +155,6 @@ func JobCapabilities(params *StreamParameters) (*Capabilities, error) {
 	caps := make(map[Capability]bool)
 
 	// Define any default capabilities (especially ones that may be mandatory)
-	caps[Capability_H264] = true
 	caps[Capability_AuthToken] = true
 	if params.VerificationFreq > 0 {
 		caps[Capability_MPEG7VideoSignature] = true
@@ -124,6 +168,13 @@ func JobCapabilities(params *StreamParameters) (*Capabilities, error) {
 			return nil, err
 		}
 		caps[c] = true
+
+		// set encoder
+		encodeCap, err := outputCodecToCapability(v.Encoder)
+		if err != nil {
+			return nil, err
+		}
+		caps[encodeCap] = true
 
 		// fractional framerates
 		if v.FramerateDen > 0 {
@@ -159,6 +210,13 @@ func JobCapabilities(params *StreamParameters) (*Capabilities, error) {
 			caps[Capability_SceneClassification] = true
 		}
 	}
+
+	// capabilities based on detected input codec
+	decodeCap, err := inputCodecToCapability(params.Codec)
+	if err != nil {
+		return nil, err
+	}
+	caps[decodeCap] = true
 
 	// generate bitstring
 	capList := []Capability{}
@@ -219,6 +277,34 @@ func NewCapabilities(caps []Capability, m []Capability) *Capabilities {
 		c.mandatories = NewCapabilityString(m)
 	}
 	return c
+}
+
+func inputCodecToCapability(codec ffmpeg.VideoCodec) (Capability, error) {
+	switch codec {
+	case ffmpeg.H264:
+		return Capability_H264, nil
+	case ffmpeg.H265:
+		return Capability_HEVC_Decode, nil
+	case ffmpeg.VP8:
+		return Capability_VP8_Decode, nil
+	case ffmpeg.VP9:
+		return Capability_VP9_Decode, nil
+	}
+	return Capability_Invalid, capCodecConv
+}
+
+func outputCodecToCapability(codec ffmpeg.VideoCodec) (Capability, error) {
+	switch codec {
+	case ffmpeg.H264:
+		return Capability_H264, nil
+	case ffmpeg.H265:
+		return Capability_HEVC_Encode, nil
+	case ffmpeg.VP8:
+		return Capability_VP8_Encode, nil
+	case ffmpeg.VP9:
+		return Capability_VP9_Encode, nil
+	}
+	return Capability_Invalid, capCodecConv
 }
 
 func formatToCapability(format ffmpeg.Format) (Capability, error) {

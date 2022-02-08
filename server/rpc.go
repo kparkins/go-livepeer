@@ -48,10 +48,9 @@ type Orchestrator interface {
 	TranscoderSecret() string
 	Sign([]byte) ([]byte, error)
 	VerifySig(ethcommon.Address, string, []byte) bool
-	CurrentBlock() *big.Int
 	CheckCapacity(core.ManifestID) error
 	TranscodeSeg(context.Context, *core.SegTranscodingMetadata, *stream.HLSSegment) (*core.TranscodeResult, error)
-	ServeTranscoder(stream net.Transcoder_RegisterTranscoderServer, capacity int)
+	ServeTranscoder(stream net.Transcoder_RegisterTranscoderServer, capacity int, capabilities *net.Capabilities)
 	TranscoderResults(job int64, res *core.RemoteTranscoderResult)
 	ProcessPayment(payment net.Payment, manifestID core.ManifestID) error
 	TicketParams(sender ethcommon.Address, priceInfo *net.PriceInfo) (*net.TicketParams, error)

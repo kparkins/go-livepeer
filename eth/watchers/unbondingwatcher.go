@@ -3,6 +3,7 @@ package watchers
 import (
 	"fmt"
 	"math/big"
+	"sync"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -25,6 +26,8 @@ type UnbondingWatcher struct {
 	dec   *EventDecoder
 
 	quit chan struct{}
+
+	mu sync.Mutex
 }
 
 // NewUnbondingWatcher creates an UnbondingWatcher instance
@@ -45,8 +48,8 @@ func NewUnbondingWatcher(addr ethcommon.Address, bondingManagerAddr ethcommon.Ad
 
 // Watch kicks off a loop that handles events from a block subscription
 func (w *UnbondingWatcher) Watch() {
-	blockEvents := make(chan []*blockwatch.Event, 10)
-	sub := w.bw.Subscribe(blockEvents)
+	blockSink := make(chan []*blockwatch.Event, 10)
+	sub := w.bw.Subscribe(blockSink)
 	defer sub.Unsubscribe()
 
 	for {
@@ -55,8 +58,8 @@ func (w *UnbondingWatcher) Watch() {
 			return
 		case err := <-sub.Err():
 			glog.Errorf("error with block subscription: %v", err)
-		case events := <-blockEvents:
-			w.handleBlockEvents(events)
+		case block := <-blockSink:
+			go w.handleBlockEvents(block)
 		}
 	}
 }
@@ -85,6 +88,9 @@ func (w *UnbondingWatcher) handleLog(log types.Log) error {
 		// Noop if we cannot find the event name
 		return nil
 	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	switch eventName {
 	case "Unbond":
