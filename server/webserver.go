@@ -895,7 +895,17 @@ func (s *LivepeerServer) cliWebServerHandlers(bindAddr string) *http.ServeMux {
 				return
 			}
 
-			totalSupply, err := lp.TotalSupply()
+			isL1Network, err := isL1Network(getChainId)
+			if err != nil {
+				glog.Error(err)
+				return
+			}
+			var totalSupply *big.Int
+			if isL1Network {
+				totalSupply, err = lp.TotalSupply()
+			} else {
+				totalSupply, err = lp.GetGlobalTotalSupply()
+			}
 			if err != nil {
 				glog.Error(err)
 				return
@@ -1160,6 +1170,10 @@ func (s *LivepeerServer) cliWebServerHandlers(bindAddr string) *http.ServeMux {
 			gprice = nil
 		}
 		s.LivepeerNode.Eth.Backend().GasPriceMonitor().SetMaxGasPrice(gprice)
+		if err := s.LivepeerNode.Eth.SetMaxGasPrice(gprice); err != nil {
+			glog.Errorf("Error setting max gas price: %v", err)
+			respondWith500(w, err.Error())
+		}
 	})
 
 	mux.Handle("/minGasPrice", minGasPriceHandler(s.LivepeerNode.Eth))

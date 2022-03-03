@@ -384,6 +384,7 @@ func (c *StubClient) UnbondingPeriod() (uint64, error)            { return 0, ni
 func (c *StubClient) Inflation() (*big.Int, error)                { return big.NewInt(0), nil }
 func (c *StubClient) InflationChange() (*big.Int, error)          { return big.NewInt(0), nil }
 func (c *StubClient) TargetBondingRate() (*big.Int, error)        { return big.NewInt(0), nil }
+func (c *StubClient) GetGlobalTotalSupply() (*big.Int, error)     { return big.NewInt(0), nil }
 
 // Helpers
 
@@ -398,7 +399,8 @@ func (c *StubClient) Sign(msg []byte) ([]byte, error) { return msg, c.Err }
 func (c *StubClient) SignTypedData(typedData apitypes.TypedData) ([]byte, error) {
 	return []byte("foo"), c.Err
 }
-func (c *StubClient) SetGasInfo(uint64) error { return nil }
+func (c *StubClient) SetGasInfo(uint64) error       { return nil }
+func (c *StubClient) SetMaxGasPrice(*big.Int) error { return nil }
 
 // Faucet
 func (c *StubClient) NextValidRequest(common.Address) (*big.Int, error) { return nil, nil }

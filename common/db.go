@@ -104,20 +104,6 @@ var schema = `
 	-- Index to only retrieve unbonding locks that have not been used
 	CREATE INDEX IF NOT EXISTS idx_unbondinglocks_usedblock ON unbondingLocks(usedBlock);
 
-	CREATE TABLE IF NOT EXISTS winningTickets (
-		createdAt STRING DEFAULT CURRENT_TIMESTAMP,
-		sender STRING,
-		recipient STRING,
-		faceValue BLOB,
-		winProb BLOB,
-		senderNonce INTEGER,
-		recipientRand BLOB,
-		recipientRandHash STRING,
-		sig BLOB,
-		sessionID STRING
-	);
-	CREATE INDEX IF NOT EXISTS idx_winningtickets_sessionid ON winningTickets(sessionID);
-
 	CREATE TABLE IF NOT EXISTS ticketQueue (
 		createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
 		sender STRING,
@@ -565,6 +551,22 @@ func (db *DB) OrchCount(filter *DBOrchFilter) (int, error) {
 	}
 
 	return int(count64), nil
+}
+
+func (db *DB) IsOrchActive(addr ethcommon.Address, round *big.Int) (bool, error) {
+	orchs, err := db.SelectOrchs(
+		&DBOrchFilter{
+			Addresses: []ethcommon.Address{addr},
+		},
+	)
+	if err != nil {
+		return false, err
+	}
+	if len(orchs) == 0 {
+		return false, errors.New("Orchestrator not found")
+	}
+	isActive := orchs[0].ActivationRound <= round.Int64() && round.Int64() < orchs[0].DeactivationRound
+	return isActive, nil
 }
 
 func (db *DB) InsertUnbondingLock(id *big.Int, delegator ethcommon.Address, amount, withdrawRound *big.Int) error {

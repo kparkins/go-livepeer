@@ -56,8 +56,10 @@ var (
 	// The maximum blocks for the block watcher to retain
 	blockWatcherRetentionLimit = 20
 
-	// Estimate of the gas required to redeem a PM ticket
-	redeemGas = 350000
+	// Estimate of the gas required to redeem a PM ticket on L1 Ethereum
+	redeemGasL1 = 350000
+	// Estimate of the gas required to redeem a PM ticket on L2 Arbitrum
+	redeemGasL2 = 1200000
 	// The multiplier on the transaction cost to use for PM ticket faceValue
 	txCostMultiplier = 100
 
@@ -92,7 +94,7 @@ func main() {
 	cliAddr := flag.String("cliAddr", "127.0.0.1:"+CliPort, "Address to bind for  CLI commands")
 	httpAddr := flag.String("httpAddr", "", "Address to bind for HTTP commands")
 	serviceAddr := flag.String("serviceAddr", "", "Orchestrator only. Overrides the on-chain serviceURI that broadcasters can use to contact this node; may be an IP or hostname.")
-	orchAddr := flag.String("orchAddr", "", "Orchestrator to connect to as a standalone transcoder")
+	orchAddr := flag.String("orchAddr", "", "Comma-separated list of orchestrators to connect to")
 	verifierURL := flag.String("verifierUrl", "", "URL of the verifier to use")
 
 	verifierPath := flag.String("verifierPath", "", "Path to verifier shared volume")
@@ -148,6 +150,8 @@ func main() {
 	reward := flag.Bool("reward", false, "Set to true to run a reward service")
 	// Metrics & logging:
 	monitor := flag.Bool("monitor", false, "Set to true to send performance metrics")
+	metricsPerStream := flag.Bool("metricsPerStream", false, "Set to true to group performance metrics per stream")
+	metricsExposeClientIP := flag.Bool("metricsClientIP", false, "Set to true to expose client's IP in metrics")
 	version := flag.Bool("version", false, "Print out the version")
 	verbosity := flag.String("v", "", "Log verbosity.  {4|5|6}")
 	metadataQueueUri := flag.String("metadataQueueUri", "", "URI for message broker to send operation metadata")
@@ -209,6 +213,7 @@ func main() {
 	type NetworkConfig struct {
 		ethController string
 		minGasPrice   int64
+		redeemGas     int
 	}
 
 	ctx := context.Background()
@@ -216,13 +221,20 @@ func main() {
 	configOptions := map[string]*NetworkConfig{
 		"rinkeby": {
 			ethController: "0x9a9827455911a858E55f07911904fACC0D66027E",
+			redeemGas:     redeemGasL1,
 		},
 		"arbitrum-one-rinkeby": {
 			ethController: "0x9ceC649179e2C7Ab91688271bcD09fb707b3E574",
+			redeemGas:     redeemGasL2,
 		},
 		"mainnet": {
 			ethController: "0xf96d54e490317c557a967abfa5d6e33006be69b3",
 			minGasPrice:   int64(params.GWei),
+			redeemGas:     redeemGasL1,
+		},
+		"arbitrum-one-mainnet": {
+			ethController: "0xD8E8328501E9645d16Cf49539efC04f734606ee4",
+			redeemGas:     redeemGasL2,
 		},
 	}
 
@@ -245,6 +257,7 @@ func main() {
 	}
 
 	// Setting config options based on specified network
+	var redeemGas int
 	if netw, ok := configOptions[*network]; ok {
 		if *ethController == "" {
 			*ethController = netw.ethController
@@ -254,8 +267,11 @@ func main() {
 			*minGasPrice = netw.minGasPrice
 		}
 
+		redeemGas = netw.redeemGas
+
 		glog.Infof("***Livepeer is running on the %v network: %v***", *network, *ethController)
 	} else {
+		redeemGas = redeemGasL1
 		glog.Infof("***Livepeer is running on the %v network***", *network)
 	}
 
@@ -373,7 +389,12 @@ func main() {
 	lpmon.NodeID += hn
 
 	if *monitor {
+		if *metricsExposeClientIP {
+			*metricsPerStream = true
+		}
 		lpmon.Enabled = true
+		lpmon.PerStreamMetrics = *metricsPerStream
+		lpmon.ExposeClientIP = *metricsExposeClientIP
 		nodeType := lpmon.Default
 		switch n.NodeType {
 		case core.BroadcasterNode:
@@ -486,6 +507,10 @@ func main() {
 
 		if err := client.SetGasInfo(uint64(*gasLimit)); err != nil {
 			glog.Errorf("Failed to set gas info on Livepeer Ethereum Client: %v", err)
+			return
+		}
+		if err := client.SetMaxGasPrice(bigMaxGasPrice); err != nil {
+			glog.Errorf("Failed to set max gas price: %v", err)
 			return
 		}
 
@@ -609,10 +634,7 @@ func main() {
 				return
 			}
 
-			orchSetupCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
-
-			if err := setupOrchestrator(orchSetupCtx, n, recipientAddr); err != nil {
+			if err := setupOrchestrator(n, recipientAddr); err != nil {
 				glog.Errorf("Error setting up orchestrator: %v", err)
 				return
 			}
@@ -695,6 +717,11 @@ func main() {
 		}
 
 		if n.NodeType == core.RedeemerNode {
+			if err := setupOrchestrator(n, recipientAddr); err != nil {
+				glog.Errorf("Error setting up orchestrator: %v", err)
+				return
+			}
+
 			r, err := server.NewRedeemer(
 				recipientAddr,
 				n.Eth,
@@ -1147,7 +1174,7 @@ func getServiceURI(n *core.LivepeerNode, serviceAddr string) (*url.URL, error) {
 	return ethUri, nil
 }
 
-func setupOrchestrator(ctx context.Context, n *core.LivepeerNode, ethOrchAddr ethcommon.Address) error {
+func setupOrchestrator(n *core.LivepeerNode, ethOrchAddr ethcommon.Address) error {
 	// add orchestrator to DB
 	orch, err := n.Eth.GetTranscoder(ethOrchAddr)
 	if err != nil {

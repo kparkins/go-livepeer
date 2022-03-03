@@ -5,9 +5,20 @@ set -ex
 ROOT="${1:-$HOME}"
 ARCH="$(uname -m)"
 NPROC=${NPROC:-$(nproc)}
+EXTRA_CFLAGS=""
+EXTRA_LDFLAGS=""
+EXTRA_FFMPEG_FLAGS=""
 
 if [[ $ARCH == "arm64" ]] && [[ $(uname) == "Darwin" ]]; then
   # Detect Apple Silicon
+  IS_M1=1
+fi
+if [[ $ARCH == "x86_64" ]] && [[ $(uname) == "Darwin" ]] && [[ "${GOARCH:-}" == "arm64" ]]; then
+  echo "cross-compiling darwin-arm64"
+  EXTRA_CFLAGS="$EXTRA_CFLAGS --target=arm64-apple-macos11"
+  EXTRA_LDFLAGS="$EXTRA_LDFLAGS --target=arm64-apple-macos11"
+  HOST_OS="--host=aarch64-darwin"
+  EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --arch=aarch64 --enable-cross-compile"
   IS_M1=1
 fi
 echo "Arch $ARCH ${IS_M1:+(Apple Silicon)}"
@@ -71,7 +82,7 @@ if [ ! -e "$ROOT/x264" ]; then
     # older git master, does not compile on Apple Silicon
     git checkout 545de2ffec6ae9a80738de1b2c8cf820249a2530
   fi
-  ./configure --prefix="$ROOT/compiled" --enable-pic --enable-static ${HOST_OS:-} --disable-cli
+  ./configure --prefix="$ROOT/compiled" --enable-pic --enable-static ${HOST_OS:-} --disable-cli --extra-cflags="$EXTRA_CFLAGS" --extra-asflags="$EXTRA_CFLAGS"
   make -j$NPROC
   make -j$NPROC install-lib-static
 fi
@@ -98,22 +109,21 @@ if [[ $(uname) == "Linux" && $BUILD_TAGS == *"debug-video"* ]]; then
   fi
 fi
 
-EXTRA_FFMPEG_FLAGS=""
 DISABLE_FFMPEG_COMPONENTS=""
-EXTRA_LDFLAGS=""
+EXTRA_FFMPEG_LDFLAGS="$EXTRA_LDFLAGS"
 # all flags which should be present for production build, but should be replaced/removed for debug build
 DEV_FFMPEG_FLAGS="--disable-programs"
 
 if [ $(uname) == "Darwin" ]; then
-  EXTRA_LDFLAGS="-framework CoreFoundation -framework Security"
+  EXTRA_FFMPEG_LDFLAGS="$EXTRA_FFMPEG_LDFLAGS -framework CoreFoundation -framework Security"
 else
   # If we have clang, we can compile with CUDA support!
   if which clang > /dev/null; then
     echo "clang detected, building with GPU support"
-    EXTRA_FFMPEG_FLAGS="--enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid --enable-filter=scale_cuda,signature_cuda,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc"
+    EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid --enable-filter=scale_cuda,signature_cuda,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc"
     if [[ $BUILD_TAGS == *"experimental"* ]]; then
         if [ ! -e "/usr/local/lib/libtensorflow_framework.so" ]; then
-          LIBTENSORFLOW_VERSION=2.3.0 \
+          LIBTENSORFLOW_VERSION=2.6.3 \
           && curl -LO https://storage.googleapis.com/tensorflow/libtensorflow/libtensorflow-gpu-linux-x86_64-${LIBTENSORFLOW_VERSION}.tar.gz \
           && sudo tar -C /usr/local -xzf libtensorflow-gpu-linux-x86_64-${LIBTENSORFLOW_VERSION}.tar.gz \
           && rm libtensorflow-gpu-linux-x86_64-${LIBTENSORFLOW_VERSION}.tar.gz
@@ -138,7 +148,7 @@ fi
 if [ ! -e "$ROOT/ffmpeg/libavcodec/libavcodec.a" ]; then
   git clone https://github.com/livepeer/FFmpeg.git "$ROOT/ffmpeg" || echo "FFmpeg dir already exists"
   cd "$ROOT/ffmpeg"
-  git checkout 1ece0e65b1ce2e330e673df0cda23b904979a1a6
+  git checkout c0dcf5491814e0b0503180087d9e5e997f51b367
   ./configure ${TARGET_OS:-} $DISABLE_FFMPEG_COMPONENTS --fatal-warnings \
     --enable-libx264 --enable-gpl \
     --enable-protocol=rtmp,file,pipe \
@@ -149,8 +159,8 @@ if [ ! -e "$ROOT/ffmpeg/libavcodec/libavcodec.a" ]; then
     --enable-filter=aresample,asetnsamples,fps,scale,hwdownload,select,livepeer_dnn,signature \
     --enable-encoder=aac,opus,libx264 \
     --enable-decoder=aac,opus,h264 \
-    --extra-cflags="-I${ROOT}/compiled/include" \
-    --extra-ldflags="-L${ROOT}/compiled/lib ${EXTRA_LDFLAGS}" \
+    --extra-cflags="-I${ROOT}/compiled/include ${EXTRA_CFLAGS}" \
+    --extra-ldflags="-L${ROOT}/compiled/lib ${EXTRA_FFMPEG_LDFLAGS}" \
     --prefix="$ROOT/compiled" \
     $EXTRA_FFMPEG_FLAGS \
     $DEV_FFMPEG_FLAGS

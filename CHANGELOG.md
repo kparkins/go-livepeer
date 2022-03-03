@@ -1,5 +1,73 @@
 # Changelog
 
+## v0.5.29
+
+*February 21 2022*
+
+This release is a fast follow release for v0.5.28 with a few bug fixes including a fix for a nil pointer error when parsing block header logs that could cause the node to crash and a fix for displaying the global LPT supply and participation rate in `livepeer_cli`. 
+
+This release also includes a darwin arm64 build and darwin/linux binaries compiled using Go 1.17.6.
+
+### Breaking Changes 🚨🚨
+
+- The `segment_transcoded_appeared_total` and `transcode_latency_seconds` metrics are removed because they were tracked per transcoding profile and the node already tracks the overall version of the metrics
+- The `upload_time_seconds` and `discovery_errors_toatl` metrics are tracked per orchestrators instead of per stream
+
+### Features ⚒
+
+#### General
+
+- [#2274](https://github.com/livepeer/go-livepeer/pull/2274) Reduce the number of metrics datapoints (@darkdragon)
+
+#### Transcoder
+
+- [#2259](https://github.com/livepeer/go-livepeer/pull/2259) Improve startup capability test to check for Nvidia encoder session limit and to fail fast if a default capability is not supported (@cyberj0g)
+
+### Bug Fixes 🐞
+
+#### General
+
+- [#2267](https://github.com/livepeer/go-livepeer/pull/2267) Fix nil pointer in the block header logs (@leszko)
+- [#2276](https://github.com/livepeer/go-livepeer/pull/2276) Use global total supply instead of L2 supply to calculate participation rate on Arbitrum networks (@leszko)
+
+#### Orchestrator
+
+- [#2266](https://github.com/livepeer/go-livepeer/pull/2266) Fix default reward cut and fee cut in `livepeer_cli` (@leszko)
+
+## v0.5.28
+
+*February 11th 2022*
+
+This release supports connecting to Arbitrum Mainnet using the `-network arbitrum-one-mainnet` flag after the L1 Ethereum block 14207040 which is the block at which [LIP-73 i.e. the Confluence upgrade](https://github.com/livepeer/LIPs/blob/master/LIPs/LIP-73.md#specification) will be activated. Prior to this block, running the node wtih `-network arbitrum-one-mainnet` will result in a startup error so it is recommended to wait until after block 14207040 to run the node with the `-network arbitrum-one-mainnet` flag. **We strongly encourage all node operators to upgrade to this release so they can connect to Arbitrum Mainnet after the LIP-73 block**.
+
+Additional updates in this release include various improvements to compatibility with Arbitrum networks as well as the initial groundwork for enabling H.265/HEVC encoding/decoding and VP8/VP9 decoding jobs on the network.
+
+### Features ⚒
+
+#### General
+
+- [#2208](https://github.com/livepeer/go-livepeer/pull/2208) Improve Feed PubSub: execute subscribers' blocking operations in separate goroutines (@leszko)
+- [#2222](https://github.com/livepeer/go-livepeer/pull/2222) Use L1 block number for Ticket Parameters and Round Initialization (@leszko)
+- [#2240](https://github.com/livepeer/go-livepeer/pull/2240) Backfill always from the back last seen in DB (instead of the last round block) (@leszko)
+- [#2171](https://github.com/livepeer/go-livepeer/pull/2171) Make transactions compatible with Arbitrum and fix setting max gas price (@leszko)
+- [#2252](https://github.com/livepeer/go-livepeer/pull/2252) Use different hardcoded redeemGas when connected to an Arbitrum network (@leszko)
+- [#2251](https://github.com/livepeer/go-livepeer/pull/2251) Add fail fast for Arbitrum One Mainnet when LIP-73 has not been activated yet (@leszko)
+- [#2254](https://github.com/livepeer/go-livepeer/pull/2254) Add `arbitrum-one-mainnet` network (@leszko)
+
+#### Orchestrator
+
+- [#2253](https://github.com/livepeer/go-livepeer/pull/2253) Redeem tickets only when recipient is active (@leszko)
+
+#### Transcoder
+
+- [#2135](https://github.com/livepeer/go-livepeer/pull/2135) LPMS updates to support H.265/HEVC encoding and decoding as well as VP8/VP9 decoding (@cyberj0g)
+
+### Bug Fixes 🐞
+
+#### Broadcaster
+
+- [#2245](https://github.com/livepeer/go-livepeer/pull/2245) Fast verification fix (@oscar-davids)
+
 ## v0.5.27
 
 *February 3rd 2022*
